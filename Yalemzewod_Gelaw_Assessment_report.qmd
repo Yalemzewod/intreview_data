@@ -1,0 +1,596 @@
+---
+title: "Preliminary Analysis of Cesarean Section of Quality of care in WA: Data Insights for Clinical Excellence"
+author: "Yalemzewod Gelaw, senior data scientist candidate, Healthcare Quality Intelligence Unit"
+output:
+  pdf_document:
+    latex_engine: pdflatex
+---
+
+# Introduction
+
+In Australia, there has been an increase in the proportion of women opting for caesarean section birth. In 2021, 39.4% of women in WA give birth in Cesarean Section (Source: AIHW June 2023). However, clinicians have raised concerns about the potential impact on the quality of care associated with cesarean section in WA.
+
+# Task
+
+I have conducted a preliminary analysis on the 95,110 mothers who gave birth between June 19, 2018, and June 30, 2021, across 39 hospitals in WA to gate insights for mothers safety and clinical excellence.
+
+### Explore Data
+
+I loaded and conducted an exploratory analysis of the data using the R programming language to understand the data's structure and its contents.
+I examined the data for any missing entries, assessed the data types, and addressed potential quality concerns. I identified 13 rows with missing information in the principal procedure column and excluded. Additionally, I converted the data type of `date` columns from `character` format to the appropriate date format. Moreover, I added new variables: the time intervals between admission and procedure, admission and separation, as well as procedure and separation. I categorized age groups based on the ABS classification.
+
+```{r load data, warning=FALSE,message=FALSE,eval=FALSE, echo=FALSE}
+# file path
+path <- "C:/Users/user/OneDrive/from_unsw_drive/file_YG/Job_application/WA_health/Senior_data_scientist/Interview Data_raw.xlsx"
+
+# read
+cs <- read_excel(path,col_names = TRUE,
+                 na = "",
+                 trim_ws = TRUE) |> 
+      janitor::clean_names()
+```
+
+```{r inspect, warning=FALSE, message=FALSE, echo=FALSE, eval=FALSE}
+glimpse(cs)
+
+summary(is.na(cs))
+```
+
+```{r manage data, warning=FALSE, message=FALSE, echo=FALSE, eval=FALSE}
+cs_no_nas <- cs |> 
+     filter(!is.na(principal_procedure)) |>  # exclude 13 `Na's` = [95,097]
+     mutate(index_id = row_number()) |>  # Generate an index ID
+    relocate(index_id, .before = hospital) # first column
+
+     # convert to date - format of the date variables is "ddMONyyyy" 
+  cs_no_nas <- cs_no_nas |> 
+  mutate(separation_date = as.Date(separation_date, format = "%d%b%Y"),
+         admission_date = as.Date(admission_date, format = "%d%b%Y"), 
+         date_of_principal_procedure = as.Date(date_of_principal_procedure, format = "%d%b%Y"), 
+
+  # Calculate the day difference to see the effect of delay on the Cesarean Section
+         admission_separation_diff = as.numeric(difftime(separation_date, admission_date, units = "days")),
+         admission_procedure_diff = as.numeric(difftime(date_of_principal_procedure, admission_date, units = "days")),
+         procedure_separation_diff = as.numeric(difftime(separation_date, date_of_principal_procedure, units = "days")),
+  
+# separation year
+speparation_year = year(separation_date),
+
+# diganosis group decription (mode of delivery) column has multiple information in a single row. I'm creating a new column with a boolean (Caesarean Delivery and Vaginal Delivery) and complexity with three groups (minor, intermediate, and major).
+
+mode_delivery = case_when(
+  drg_description%in%c("O01A Caesarean Delivery, Major Complexity",
+                       "O01B Caesarean Delivery, Intermediate Complexity",
+                       "O01C Caesarean Delivery, Minor Complexity") ~ "Caesarean Delivery",
+                        TRUE ~ "Vaginal Delivery"
+),
+
+complexity_delivery = case_when(
+    grepl("Major Complexity", drg_description) ~ "major",
+    grepl("Intermediate Complexity", drg_description) ~ "intermediate",
+    grepl("Minor Complexity", drg_description) ~ "minor",
+    TRUE ~ "other"  # if needed
+  
+),
+
+# Admission status
+admission_priority = case_when(
+  grepl("Elective", admission_status) ~ "Elective",
+      TRUE ~ "Emergency"
+),
+
+admission_waiting = case_when(
+    grepl("from waitlist", admission_status) ~ "from waitlist",
+    grepl("Direct Admission", admission_status) ~ "Direct Admission",
+    grepl("ED Admission", admission_status) ~ "ED Admission",
+    TRUE ~ "not from waitlist"  
+  
+),
+# recategorise into Aboriginal or TSI origin and Not aboriginal or TSI origin
+Aborginality = case_when(
+   grepl("Aboriginal and TSI origin", indigenous_status_description) ~ "Aboriginal or TSI origin",
+    grepl("Aboriginal not TSI", indigenous_status_description) ~ "Aboriginal or TSI origin",
+    grepl("TSI but not Aboriginal", indigenous_status_description) ~ "Aboriginal or TSI origin",
+    TRUE ~ "Not aboriginal or TSI origin"  
+),
+
+# age category - based on ABS
+age_cat = as.factor(case_when(age_years <20 ~ "under 20",
+                      age_years >=20 & age_years <25 ~ "20-24",
+                      age_years>=25 & age_years <30 ~ "25-29",
+                      age_years>=30 & age_years <35 ~ "30-34",
+                      age_years>=35 & age_years <40 ~ "35-39",
+                      age_years>=40 ~ "40 and over",
+                      TRUE ~ as.character( age_years))),
+ # Order the levels of age_cat
+    age_cat = factor(age_cat, levels = c(
+      "under 20", "20-24", "25-29", "30-34", "35-39", "40 and over"
+    ))
+  )
+
+  # check data type
+ 
+  glimpse(cs_no_nas$admission_date)
+  
+  levels(as.factor(cs_no_nas$age_cat))
+```
+
+# Preliminary Results 
+
+My result structured in three categories: Demographic characteristics of mothers, Caesearn section key quality indicators and statics and data-driven insights and potential areas for further investigation to address the concerns raised by clinicians.
+
+### Demographics 
+
+Percentage of age less than 19 and over 40
+
+The average age of mother was 30.8 and more than one in third (36.8%) of mother were aged between 30 and 34.
+
+```{r age, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+# year aveg
+cs_no_nas |> 
+  summarise(Average = round(mean(age_years),1))
+
+# age by separation year
+cs_no_nas |> 
+  group_by(speparation_year) |> 
+  summarise(Average = round(mean(age_years),1))
+```
+
+Percentage of mother under 20 and over 40 years
+
+```{r age_separation_year, warning=FALSE, message=FALSE, echo=FALSE, eval=FALSE}
+
+# age group by speparation_year
+ age_tab <- cs_no_nas |> 
+  group_by(age_cat, speparation_year) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+  # age group by diagnosis discription
+ age_dx <- cs_no_nas |> 
+  group_by(age_cat, diagnosis_related_group_drg) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+ 
+ # Sort the data by count in descending order within each age category
+age_dx <- age_dx[order(age_dx$age_cat, -age_dx$percentage),]
+
+# Filter to keep only the top drg_description for each age category
+# top_age_dx <- age_dx |> 
+#   group_by(age_cat) |> 
+#   slice(1)
+
+# Create a grouped bar plot
+
+
+gg_age_dx_plot <- ggplot(age_dx, aes(x = diagnosis_related_group_drg, y = percentage, fill = age_cat)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +  
+  labs(title = "",
+       x = "Diagnosis Group Description",
+       y = "%",
+       fill = "Age Category") +
+  theme_minimal() +
+   coord_flip() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "Set1")  # Set1 palette for distinct colors
+
+print(gg_age_dx_plot)
+
+```
+
+Percentage of ATSI
+
+```{r ATSI, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+ # ATSI
+  age_atsi <- cs_no_nas |> 
+  group_by(Aborginality, age_cat) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+  
+  
+   # plot
+gg_age_atsi_composition <- ggplot(age_atsi, aes(x = age_cat, y = percentage, fill = Aborginality)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(title = "",
+       x = "Age Category",
+       y = "Percentage",
+       fill = "Indigenous Status") +
+  
+  theme_minimal() +
+  coord_flip()
+
+# Print the plot
+print(gg_age_atsi_composition)
+```
+
+Separation by Hospital Sector
+
+```{r health sector, message=FALSE, warning=FALSE, echo=FALSE, eval=FALSE}
+  hs_type <- cs_no_nas |> 
+  group_by(patient_type) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+  
+  # bar plot
+gg_hs_type_plot <- ggplot(hs_type, aes(x = patient_type, y = percentage, fill = patient_type)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage of Mothers birth by Hospital Sector",
+       x = "Hospital Sector",
+       y = "Percentage") +
+  theme_minimal() +
+theme(legend.position = "none")
+# Print the bar plot
+print(gg_hs_type_plot)
+```
+
+Separation by mothers by methods of birth
+
+```{r}
+birth_type <- cs_no_nas %>%
+  group_by(mode_delivery) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+  
+
+  # bar plot
+gg_del_type_plot <- ggplot(birth_type, aes(x = mode_delivery, y = percentage,
+                                           fill = mode_delivery)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage of Mothers by Metod of Birth",
+       x = "Method of Birth",
+       y = "Percentage") +
+  theme_minimal() +
+theme(legend.position = "none")
+# Print the bar plot
+print(gg_del_type_plot)
+```
+
+Length of stay by methods of birth
+
+```{r}
+ggplot(cs_no_nas, aes(x = admission_procedure_diff, y = age_years)) + 
+  geom_point(aes(color = mode_delivery), alpha = 0.5) +
+  scale_color_manual(values = c("#00AFBB",  "#FC4E07")) +
+  scale_size(range = c(0.5, 12))  
+```
+
+The most common diagnosis description\
+
+```{r}
+
+dx_dis <- cs_no_nas |> 
+  group_by(principal_diagnosis_description) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# top diagnosis descriptions based on percentage
+
+# Sort the data by percentage in descending order
+dx_dis <- dx_dis[order(-dx_dis$percentage),]
+
+# Create a bar plot with percentage on the y-axis
+gg_dx_dis_plot <- ggplot(dx_dis[1:10, ], aes(x = reorder(principal_diagnosis_description, percentage), y = percentage)) +
+  geom_bar(stat = "identity", fill = "#0073C2FF") +
+  coord_flip() +
+  labs(title = "",
+       x = "Diagnosis Descriptions",
+       y = "Percentage") +
+  theme_minimal()
+
+print(gg_dx_dis_plot)
+
+```
+
+```{r}
+# mode_of_separation by health area of residency
+sep_remote <- cs_no_nas |> 
+  group_by(diagnosis_related_group_drg, mode_of_separation_description) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+library(ggplot2)
+
+# Assuming you've already run your code to generate sep_remote
+
+# Create a grouped bar plot
+gg_sep_remote_plot <- ggplot(subset(sep_remote, mode_of_separation_description %in% 
+                                   c("Against medical advice/at own risk", "Deceased", 
+                                     "Transfer to an Acute Hospital", 
+                                     "Transfer to Psychiatric Hospital")), 
+                            aes(x = mode_of_separation_description, y = percentage, fill = mode_of_separation_description)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Mode of Separation by Health Area of Residency",
+       x = "Mode of Separation",
+       y = "Percentage") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("#0073C2FF", "#FC4E07", "#2CA02C", "#D62728"))
+
+print(gg_sep_remote_plot)
+
+```
+
+```{r admission priority}
+  ad_type <- cs_no_nas |> 
+  group_by(admission_priority) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+  
+  # bar plot
+gg_ad_type_plot <- ggplot(ad_type, aes(x = gg_ad_type_plot, y = percentage, fill = admission_priority)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage of Mothers birth by Admission Priority",
+       x = "Admission Priority",
+       y = "Percentage") +
+  theme_minimal() +
+theme(legend.position = "none")
+# Print the bar plot
+print(gg_ad_type_plot)
+```
+
+### 
+Caesearn section key quality indicators and statics 
+
+```{r cs, filter}
+
+cs_only <- cs_no_nas |> 
+  filter(mode_delivery%in%"Caesarean Delivery")
+
+```
+
+```{r}
+
+# year aveg
+cs_only |> 
+  summarise(Average = round(mean(age_years),1))
+
+# age by separation year
+cs_only |> 
+  group_by(speparation_year) |> 
+  summarise(Average = round(mean(age_years),1))
+
+# age group
+
+cs_only|> 
+  group_by(age_cat) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+# health service type
+
+cs_only|> 
+  group_by(patient_type) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# ATSI
+
+cs_only|> 
+  group_by(Aborginality) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# diagnosis discreption
+
+cs_only|> 
+  group_by(diagnosis_related_group_drg) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# health area of residence
+
+cs_only|> 
+  group_by(health_area_of_residency) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# mode of separation
+dx_dis <- cs_only |> 
+  group_by(principal_diagnosis_description) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+
+# top diagnosis descriptions based on percentage
+
+# Sort the data by percentage in descending order
+dx_dis <- dx_dis[order(-dx_dis$percentage),]
+
+# Create a bar plot with percentage on the y-axis
+cs_dx_dis_plot <- ggplot(dx_dis[1:10, ], aes(x = reorder(principal_diagnosis_description, percentage), y = percentage)) +
+  geom_bar(stat = "identity", fill = "#0073C2FF") +
+  coord_flip() +
+  labs(title = "",
+       x = "Diagnosis Descriptions",
+       y = "Percentage") +
+  theme_minimal()
+
+print(cs_dx_dis_plot)
+
+# procedural discreption
+
+pro_dis <- cs_only |> 
+  group_by(principal_procedure_description) |> 
+  summarise(count = n()) |> 
+  mutate(percentage = round(count / sum(count) * 100,1))
+
+pro_dis <- pro_dis[order(-pro_dis$percentage),]
+
+# Create a bar plot with percentage on the y-axis
+cs_pr_dis_plot <- ggplot(pro_dis[1:10,], aes(x = reorder(principal_procedure_description, percentage), y = percentage)) +
+  geom_bar(stat = "identity", fill = "#0073C2FF") +
+  coord_flip() +
+  labs(title = "",
+       x = "Procedure Descriptions",
+       y = "Percentage") +
+  theme_minimal()
+
+print(cs_pr_dis_plot)
+
+```
+
+```{r}
+# days
+cs_only |> 
+   summarise(
+    avg_dif_adm_sep = mean(admission_separation_diff),
+    avg_dif_adm_pro = mean(admission_procedure_diff),
+    avg_dif_pro_sep = mean(procedure_separation_diff),
+    sd_dif_adm_sep = sd(admission_separation_diff),
+   sd_dif_adm_pro = sd(admission_procedure_diff),
+    sd_dif_pro_sep = sd(procedure_separation_diff),
+    #  min_dif_adm_sep = min(admission_separation_diff),
+    # min_dif_adm_pro = min(admission_procedure_diff),
+    # min_dif_pro_sep = min(procedure_separation_diff),
+  )
+#age
+
+cs_only |> 
+  group_by(age_cat) |> 
+  summarise(
+    avg_dif_adm_sep = mean(admission_separation_diff),
+    avg_dif_adm_pro = mean(admission_procedure_diff),
+    avg_dif_pro_sep = mean(procedure_separation_diff),
+    max_dif_adm_sep = max(admission_separation_diff),
+    max_dif_adm_pro = max(admission_procedure_diff),
+    max_dif_pro_sep = max(procedure_separation_diff),
+    #  min_dif_adm_sep = min(admission_separation_diff),
+    # min_dif_adm_pro = min(admission_procedure_diff),
+    # min_dif_pro_sep = min(procedure_separation_diff),
+  )
+```
+
+```{r}
+cs_only |> 
+  group_by(patient_type) |> 
+  summarise(
+    avg_dif_adm_sep = mean(admission_separation_diff),
+    avg_dif_adm_pro = mean(admission_procedure_diff),
+    avg_dif_pro_sep = mean(procedure_separation_diff),
+    sd_dif_adm_sep = sd(admission_separation_diff),
+    sd_dif_adm_pro = sd(admission_procedure_diff),
+    sd_dif_pro_sep = sd(procedure_separation_diff),
+    # min_dif_adm_sep = min(admission_separation_diff),
+    # min_dif_adm_pro = min(admission_procedure_diff),
+    # min_dif_pro_sep = min(procedure_separation_diff),
+  )
+
+# private public
+
+data <- cs_only |> 
+  # filter(mode_of_separation_description%in%c(
+  #   "Against medical advice/at own risk",                                             "Deceased","Transfer to an Acute Hospital",
+  #   "Transfer to Psychiatric Hospital")) |> 
+  group_by(drg_description) |> 
+  summarise(count = n())
+  
+
+ 
+  ggplot(data = data,aes(x = mode_of_separation_description, y = avg_dif_adm_pro,
+                           fill = principal_procedure_description)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Delay Days by Separation Description and Procedure Description",
+       x = "Mode of Separation Description",
+       y = "Average Delay Days (Procedure Separation Diff)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) 
+
+
+
+
+
+
+
+## Metro vs Rural
+d2 <- cs_only |> 
+  group_by(patient_type) |> 
+  summarise(
+       avg_dif_adm_pro = mean(admission_procedure_diff),
+     avg_dif_pro_sep = mean(procedure_separation_diff),
+     avg_dif_adm_sep = mean(admission_separation_diff))
+    # min_dif_adm_sep = min(admission_separation_diff),
+    # min_dif_adm_pro = min(admission_procedure_diff),
+    # min_dif_pro_sep = min(procedure_separation_diff),
+  )
+
+ggplot(data = d2, aes(x = patient_type)) +
+  geom_bar(aes(y = avg_dif_adm_pro, fill = "Adm to Pro"), position = position_dodge(width = 0.8), stat = "identity") +
+  geom_bar(aes(y = avg_dif_pro_sep, fill = "Pro to Sep"), position = position_dodge(width = 0.8), stat = "identity") +
+  geom_bar(aes(y = avg_dif_adm_sep, fill = "Adm to Sep"), position = position_dodge(width = 0.8), stat = "identity") +
+  labs(title = "Average Differences by Patient Type",
+       x = "Patient Type",
+       y = "Average Difference") +
+  scale_fill_manual(values = c("Adm to Pro" = "blue", "Pro to Sep" = "red", "Adm to Sep" = "green")) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme_minimal()
+```
+
+```{r}
+
+# Admission to Separation Time by Admission Status
+plota <- ggplot(cs_only, aes(x = admission_status, y = admission_separation_diff,
+                             fill = admission_status )) +
+  geom_boxplot() +
+  labs(title = "Admission to Separation Time by Admission Status",
+       x = "",
+       y = "Admission to Separation Time (Days)") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank()) 
+
+# Admission to procedure Time by Admission Status
+
+plotb <- ggplot(cs_only, aes(x = patient_type, y = admission_procedure_diff, fill = patient_type)) +
+  geom_boxplot() +
+  labs(title = "",
+       x = "",
+       y = "Admission to Procedure Time (Days)") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        legend.position = "bottom",   # Move legend to bottom
+        legend.text = element_text(size = 6))  # Adjust legend text size
+
+# Remove legend title
+plotb + guides(fill = guide_legend(title = NULL))
+
+
+# admission priority 
+# 
+
+ggplot(cs_only, aes(x = admission_priority, y = admission_procedure_diff,
+                             fill = admission_priority)) +
+  geom_boxplot() +
+  labs(title = "Admission to Procedure Time by Admission Status",
+       x = "",
+       y = "Admission to Separation Time (Days)") +
+  theme_minimal() +
+theme(axis.text.x = element_blank(),
+        legend.position = "bottom",   
+        legend.text = element_text(size = 8))
+
+
+# Procedure to Separation Time by Admission Status
+plotc <- ggplot(cs_only, aes(x = admission_status, y = procedure_separation_diff, fill = admission_status)) +
+  geom_boxplot() +
+  labs(title = "Procedure to Separation Time by Admission Status",
+       x = "",  # Remove x-axis label
+       y = "Admission to Separation Time (Days)") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        legend.position = "bottom",   # Move legend to bottom
+        legend.text = element_text(size = 6))
+ 
+
+# facet
+
+# Combine the plots into one facet
+combined_plots <- grid.arrange(plota, plotb, plotc, ncol = 1)
+
+# Print the combined plots
+print(combined_plots)
+```
